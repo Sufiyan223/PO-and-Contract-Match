@@ -27,7 +27,7 @@ class ValidateResponse(BaseModel):
     response_model=ValidateResponse,
     dependencies=[Depends(require_api_key)],
 )
-async def validate(
+def validate(
     po_pdf: UploadFile = File(...),
     contract_pdf: UploadFile = File(...),
     sap_record: str = Form(...),
@@ -38,8 +38,8 @@ async def validate(
     try:
         po_path = temp_dir / "po.pdf"
         contract_path = temp_dir / "contract.pdf"
-        po_path.write_bytes(await po_pdf.read())
-        contract_path.write_bytes(await contract_pdf.read())
+        po_path.write_bytes(po_pdf.file.read())
+        contract_path.write_bytes(contract_pdf.file.read())
 
         po_details, contract_details = run_extraction_crew(str(po_path), str(contract_path))
         sap_report, contract_report = run_validation_crew(

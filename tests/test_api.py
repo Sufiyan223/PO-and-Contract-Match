@@ -96,3 +96,53 @@ def test_validate_happy_path(mock_extraction, mock_validation):
     assert body["sap_validation"]["overall_status"] == "PASS"
     assert body["contract_validation"]["overall_status"] == "FAIL"
     assert base64.b64decode(body["report_pdf_base64"]).startswith(b"%PDF")
+
+
+def test_validate_missing_api_key():
+    response = client.post(
+        "/validate",
+        files=_upload_files(),
+        data={"sap_record": "{}"},
+    )
+    assert response.status_code == 401
+
+
+def test_validate_wrong_api_key():
+    response = client.post(
+        "/validate",
+        headers={"X-API-Key": "wrong-key"},
+        files=_upload_files(),
+        data={"sap_record": "{}"},
+    )
+    assert response.status_code == 401
+
+
+def test_validate_invalid_sap_record_json():
+    response = client.post(
+        "/validate",
+        headers={"X-API-Key": "test-key"},
+        files=_upload_files(),
+        data={"sap_record": "not valid json"},
+    )
+    assert response.status_code == 400
+
+
+def test_validate_missing_required_field():
+    response = client.post(
+        "/validate",
+        headers={"X-API-Key": "test-key"},
+        files={"po_pdf": ("po.pdf", b"%PDF-1.4 fake po content", "application/pdf")},
+        data={"sap_record": "{}"},
+    )
+    assert response.status_code == 400
+
+
+@patch("api.main.run_extraction_crew", side_effect=RuntimeError("LLM API error"))
+def test_validate_pipeline_failure(mock_extraction):
+    response = client.post(
+        "/validate",
+        headers={"X-API-Key": "test-key"},
+        files=_upload_files(),
+        data={"sap_record": "{}"},
+    )
+    assert response.status_code == 500

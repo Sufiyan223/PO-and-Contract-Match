@@ -1,10 +1,13 @@
 import base64
 import json
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api.auth import require_api_key
@@ -13,7 +16,16 @@ from crews.validation_crew import run_validation_crew
 from schemas.discrepancy_schema import ValidationReport
 from utils.report_writer import write_report
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="PO and Contract Match API")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": exc.errors()})
 
 
 class ValidateResponse(BaseModel):
@@ -32,7 +44,10 @@ def validate(
     contract_pdf: UploadFile = File(...),
     sap_record: str = Form(...),
 ) -> ValidateResponse:
-    sap_record_dict = json.loads(sap_record)
+    try:
+        sap_record_dict = json.loads(sap_record)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="sap_record must be valid JSON")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="po_contract_match_"))
     try:
@@ -41,11 +56,15 @@ def validate(
         po_path.write_bytes(po_pdf.file.read())
         contract_path.write_bytes(contract_pdf.file.read())
 
-        po_details, contract_details = run_extraction_crew(str(po_path), str(contract_path))
-        sap_report, contract_report = run_validation_crew(
-            po_details, contract_details, sap_record_dict
-        )
-        report_json_path = write_report(sap_report, contract_report)
+        try:
+            po_details, contract_details = run_extraction_crew(str(po_path), str(contract_path))
+            sap_report, contract_report = run_validation_crew(
+                po_details, contract_details, sap_record_dict
+            )
+            report_json_path = write_report(sap_report, contract_report)
+        except Exception:
+            logger.exception("Pipeline failed while processing /validate request")
+            raise HTTPException(status_code=500, detail="Validation pipeline failed")
 
         pdf_path = report_json_path.with_suffix(".pdf")
         pdf_base64 = base64.b64encode(pdf_path.read_bytes()).decode("ascii")

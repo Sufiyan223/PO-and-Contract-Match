@@ -120,8 +120,8 @@ describe('UploadForm', () => {
     render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
     await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
 
-    expect(await screen.findByText('Selected: po.pdf')).toBeInTheDocument()
-    expect(screen.getByText('Selected: contract.pdf')).toBeInTheDocument()
+    expect(await screen.findByText('po.pdf')).toBeInTheDocument()
+    expect(screen.getByText('contract.pdf')).toBeInTheDocument()
   })
 
   it('shows a fetching label while the Outlook request is in flight', async () => {

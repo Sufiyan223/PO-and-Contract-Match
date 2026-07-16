@@ -1,13 +1,14 @@
-:root {
+@import 'tailwindcss';
+
+@theme {
+  --color-accent: var(--color-indigo-600);
+  --color-accent-dark: var(--color-indigo-400);
+}
+
+html {
   color-scheme: light dark;
 }
 
 body {
-  margin: 0;
-}
-
-h1,
-h2,
-h3 {
-  margin: 0 0 0.5rem;
+  @apply bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100;
 }

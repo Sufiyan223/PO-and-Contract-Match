@@ -1,9 +1,15 @@
 import { useState } from 'react'
+import { Mail } from 'lucide-react'
 import { fetchFromOutlook } from '../api'
 import type { ValidateFiles } from '../api'
 import { base64ToFile } from '../download'
 import { getApiKey, getApiUrl } from '../storage'
 import type { ApiError } from '../types'
+import { Alert } from './ui/Alert'
+import { Button } from './ui/Button'
+import { Card } from './ui/Card'
+import { FileDropzone } from './ui/FileDropzone'
+import { Spinner } from './ui/Spinner'
 
 interface UploadFormProps {
   isLoading: boolean
@@ -15,12 +21,14 @@ interface UploadFormProps {
 export function UploadForm({ isLoading, errorMessage, onSubmit, onCancel }: UploadFormProps) {
   const [poPdfFile, setPoPdfFile] = useState<File | null>(null)
   const [contractPdfFile, setContractPdfFile] = useState<File | null>(null)
+  const [sapJsonFile, setSapJsonFile] = useState<File | null>(null)
   const [sapJsonError, setSapJsonError] = useState<string | null>(null)
   const [sapRecordText, setSapRecordText] = useState<string | null>(null)
   const [isFetchingOutlook, setIsFetchingOutlook] = useState(false)
   const [outlookFetchError, setOutlookFetchError] = useState<string | null>(null)
 
   async function handleSapFileChange(file: File | null) {
+    setSapJsonFile(file)
     setSapJsonError(null)
     setSapRecordText(null)
     if (!file) return
@@ -57,58 +65,79 @@ export function UploadForm({ isLoading, errorMessage, onSubmit, onCancel }: Uplo
   }
 
   return (
-    <form className="upload-form" onSubmit={handleSubmit}>
-      <h2>Upload documents</h2>
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+      <Card title="Upload documents">
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 dark:bg-slate-700/40">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Provide the PO and Contract manually, or fetch both from Outlook.
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            icon={isFetchingOutlook ? <Spinner className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
+            onClick={() => void handleFetchFromOutlook()}
+            disabled={isFetchingOutlook}
+          >
+            {isFetchingOutlook ? 'Fetching from Outlook…' : 'Fetch from Outlook'}
+          </Button>
+        </div>
+        {outlookFetchError && (
+          <div className="mb-4">
+            <Alert>{outlookFetchError}</Alert>
+          </div>
+        )}
 
-      <button type="button" onClick={() => void handleFetchFromOutlook()} disabled={isFetchingOutlook}>
-        {isFetchingOutlook ? 'Fetching from Outlook…' : 'Fetch from Outlook'}
-      </button>
-      {outlookFetchError && <p className="error-banner">{outlookFetchError}</p>}
+        <div className="grid gap-4 sm:grid-cols-3">
+          <FileDropzone
+            id="po-pdf"
+            label="Purchase Order (PDF)"
+            accept="application/pdf"
+            value={poPdfFile}
+            onChange={setPoPdfFile}
+          />
+          <FileDropzone
+            id="contract-pdf"
+            label="Contract (PDF)"
+            accept="application/pdf"
+            value={contractPdfFile}
+            onChange={setContractPdfFile}
+          />
+          <div>
+            <FileDropzone
+              id="sap-json"
+              label="SAP Record (JSON)"
+              accept="application/json"
+              value={sapJsonFile}
+              onChange={(file) => void handleSapFileChange(file)}
+            />
+            {sapJsonError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{sapJsonError}</p>}
+          </div>
+        </div>
 
-      <label htmlFor="po-pdf">Purchase Order (PDF)</label>
-      <input
-        id="po-pdf"
-        type="file"
-        accept="application/pdf"
-        onChange={(e) => setPoPdfFile(e.target.files?.[0] ?? null)}
-      />
-      {poPdfFile && <p className="field-hint">Selected: {poPdfFile.name}</p>}
+        {!canSubmit && !isLoading && (
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+            Select all three files (SAP record must be valid JSON) to continue.
+          </p>
+        )}
+      </Card>
 
-      <label htmlFor="contract-pdf">Contract (PDF)</label>
-      <input
-        id="contract-pdf"
-        type="file"
-        accept="application/pdf"
-        onChange={(e) => setContractPdfFile(e.target.files?.[0] ?? null)}
-      />
-      {contractPdfFile && <p className="field-hint">Selected: {contractPdfFile.name}</p>}
-
-      <label htmlFor="sap-json">SAP Record (JSON)</label>
-      <input
-        id="sap-json"
-        type="file"
-        accept="application/json"
-        onChange={(e) => void handleSapFileChange(e.target.files?.[0] ?? null)}
-      />
-      {sapJsonError && <p className="field-error">{sapJsonError}</p>}
-
-      {!canSubmit && !isLoading && (
-        <p className="field-hint">Select all three files (SAP record must be valid JSON) to continue.</p>
-      )}
-
-      {errorMessage && <p className="error-banner">{errorMessage}</p>}
+      {errorMessage && <Alert>{errorMessage}</Alert>}
 
       {isLoading ? (
-        <div className="loading-state">
-          <p>Validating — this can take a minute or two…</p>
-          <button type="button" onClick={onCancel}>
+        <div className="flex items-center gap-3">
+          <Spinner className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Validating — this can take a minute or two…
+          </p>
+          <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
             Cancel
-          </button>
+          </Button>
         </div>
       ) : (
-        <button type="submit" disabled={!canSubmit}>
+        <Button type="submit" disabled={!canSubmit} className="self-start">
           Validate
-        </button>
+        </Button>
       )}
     </form>
   )

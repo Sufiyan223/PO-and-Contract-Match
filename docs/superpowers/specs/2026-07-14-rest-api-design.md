@@ -6,7 +6,9 @@ Expose the existing PO/Contract validation pipeline (currently only runnable via
 
 ## Architecture
 
-A new `api/` package sits alongside `crews/`, `agents/`, `schemas/`, etc. It is a thin HTTP layer only — no business logic lives here. It orchestrates calls into the existing, unchanged pipeline (`crews/extraction_crew.py`, `crews/validation_crew.py`, `utils/report_writer.py`).
+A new `api/` package sits alongside `crews/`, `agents/`, `schemas/`, etc. It is a thin HTTP layer only — no business logic lives here. It orchestrates calls into the existing pipeline (`crews/extraction_crew.py`, `crews/validation_crew.py`, `utils/report_writer.py`).
+
+**Post-implementation note:** manual end-to-end verification (see the implementation plan's Task 4) found that `utils/report_writer.py` crashed on real LLM output containing characters outside the PDF's `helvetica` font range (en/em dashes, curly quotes, `₹`, etc.). This was an approved, out-of-plan exception to "unchanged" — a `_sanitize_text` helper was added at PDF-render call sites only, leaving the JSON report's original text untouched. This affects `main.py` (CLI) too, not just the API.
 
 `main.py` (CLI entry point) and `api/main.py` (server entry point) are two independent front doors to the same core pipeline. Neither imports the other.
 
@@ -62,8 +64,8 @@ Rejected alternatives:
 |---|---|
 | Missing/invalid `X-API-Key` | `401 Unauthorized` |
 | Missing `po_pdf`/`contract_pdf`/`sap_record` | `400 Bad Request` with a clear message |
-| `sap_record` is not valid JSON | `400 Bad Request` with a clear message |
-| PDF unreadable/corrupt | `400 Bad Request` |
+| `sap_record` is not valid JSON, or not a JSON object | `400 Bad Request` with a clear message |
+| PDF unreadable/corrupt | `500 Internal Server Error` — surfaces via the generic pipeline-failure path (pdfplumber errors inside `run_extraction_crew`), not distinguished from other crew/LLM failures, consistent with the "thin layer, no business logic" principle |
 | Crew/LLM call fails (rate limit, API error, etc.) | `500 Internal Server Error` with a generic message; details logged server-side, not leaked to the caller |
 
 ## Testing

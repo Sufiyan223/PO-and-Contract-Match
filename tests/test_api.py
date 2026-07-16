@@ -127,6 +127,16 @@ def test_validate_invalid_sap_record_json():
     assert response.status_code == 400
 
 
+def test_validate_sap_record_not_a_json_object():
+    response = client.post(
+        "/validate",
+        headers={"X-API-Key": "test-key"},
+        files=_upload_files(),
+        data={"sap_record": "42"},
+    )
+    assert response.status_code == 400
+
+
 def test_validate_missing_required_field():
     response = client.post(
         "/validate",

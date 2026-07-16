@@ -5,10 +5,13 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+load_dotenv()
 
 from api.auth import require_api_key
 from crews.extraction_crew import run_extraction_crew
@@ -48,6 +51,8 @@ def validate(
         sap_record_dict = json.loads(sap_record)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="sap_record must be valid JSON")
+    if not isinstance(sap_record_dict, dict):
+        raise HTTPException(status_code=400, detail="sap_record must be a JSON object")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="po_contract_match_"))
     try:

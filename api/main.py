@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -22,6 +24,13 @@ from utils.report_writer import write_report
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PO and Contract Match API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
 
 
 @app.exception_handler(RequestValidationError)

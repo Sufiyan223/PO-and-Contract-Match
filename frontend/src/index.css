@@ -1,0 +1,13 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.5rem;
+}

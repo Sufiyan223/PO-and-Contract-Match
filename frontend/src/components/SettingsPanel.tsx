@@ -17,6 +17,8 @@ export function SettingsPanel() {
   const [outlookSaved, setOutlookSaved] = useState(false)
   const [outlookError, setOutlookError] = useState<string | null>(null)
 
+  const [sapNotAvailable, setSapNotAvailable] = useState(false)
+
   useEffect(() => {
     let cancelled = false
     getOutlookConfig(apiUrl, apiKey)
@@ -157,6 +159,12 @@ export function SettingsPanel() {
       </button>
       {outlookSaved && <span className="settings-saved">Saved</span>}
       {outlookError && <p className="error-banner">{outlookError}</p>}
+
+      <h3>SAP Connection</h3>
+      <button type="button" onClick={() => setSapNotAvailable(true)}>
+        Connect to SAP
+      </button>
+      {sapNotAvailable && <p className="field-hint">SAP integration is not yet available.</p>}
     </div>
   )
 }

@@ -91,3 +91,21 @@ describe('SettingsPanel — Outlook Connection', () => {
     expect(screen.getByLabelText('Client Secret')).toHaveValue('')
   })
 })
+
+describe('SettingsPanel — SAP Connection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    mockGetOutlookConfig.mockRejectedValue(notConfiguredError())
+  })
+
+  it('shows a "not yet available" message when Connect to SAP is clicked', async () => {
+    const user = userEvent.setup()
+    render(<SettingsPanel />)
+
+    expect(screen.queryByText('SAP integration is not yet available.')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Connect to SAP' }))
+
+    expect(screen.getByText('SAP integration is not yet available.')).toBeInTheDocument()
+  })
+})

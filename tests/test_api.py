@@ -6,8 +6,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from outlook.graph_client import (
+    GraphApiError,
+    MissingAttachmentError,
+    NoMatchingEmailError,
+    OutlookAuthError,
+)
 from schemas.contract_schema import ContractDetails
 from schemas.discrepancy_schema import DiscrepancyItem, ValidationReport
+from schemas.outlook_schema import OutlookConfig
 from schemas.po_schema import PODetails
 
 client = TestClient(app)
@@ -156,3 +163,97 @@ def test_validate_pipeline_failure(mock_extraction):
         data={"sap_record": "{}"},
     )
     assert response.status_code == 500
+
+
+FAKE_OUTLOOK_CONFIG = OutlookConfig(
+    tenant_id="tenant-123",
+    client_id="client-abc",
+    client_secret="super-secret",
+    mailbox="procurement@clientco.com",
+    subject_filter="PO and Contract",
+)
+
+
+def test_get_outlook_config_requires_api_key():
+    response = client.get("/outlook/config")
+    assert response.status_code == 401
+
+
+@patch("api.main.load_outlook_config", return_value=None)
+def test_get_outlook_config_returns_404_when_not_configured(mock_load):
+    response = client.get("/outlook/config", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 404
+
+
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_get_outlook_config_masks_the_secret(mock_load):
+    response = client.get("/outlook/config", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["client_secret_set"] is True
+    assert "client_secret" not in body
+    assert body["mailbox"] == "procurement@clientco.com"
+
+
+@patch("api.main.save_outlook_config")
+def test_post_outlook_config_saves_and_returns_masked_response(mock_save):
+    response = client.post(
+        "/outlook/config",
+        headers={"X-API-Key": "test-key"},
+        json={
+            "tenant_id": "tenant-123",
+            "client_id": "client-abc",
+            "client_secret": "super-secret",
+            "mailbox": "procurement@clientco.com",
+            "subject_filter": "PO and Contract",
+        },
+    )
+    assert response.status_code == 200
+    assert "client_secret" not in response.json()
+    mock_save.assert_called_once()
+    saved_config = mock_save.call_args.args[0]
+    assert saved_config.client_secret == "super-secret"
+
+
+@patch("api.main.load_outlook_config", return_value=None)
+def test_fetch_from_outlook_returns_404_when_not_configured(mock_load):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 404
+
+
+@patch("api.main.fetch_po_and_contract_attachments", return_value=(b"%PDF po", b"%PDF contract"))
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_fetch_from_outlook_returns_base64_pdfs_on_success(mock_load, mock_fetch):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert base64.b64decode(body["po_pdf_base64"]) == b"%PDF po"
+    assert base64.b64decode(body["contract_pdf_base64"]) == b"%PDF contract"
+
+
+@patch("api.main.fetch_po_and_contract_attachments", side_effect=OutlookAuthError("bad secret"))
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_fetch_from_outlook_maps_auth_error_to_401(mock_load, mock_fetch):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 401
+
+
+@patch("api.main.fetch_po_and_contract_attachments", side_effect=NoMatchingEmailError("no match"))
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_fetch_from_outlook_maps_no_matching_email_to_404(mock_load, mock_fetch):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 404
+
+
+@patch("api.main.fetch_po_and_contract_attachments", side_effect=MissingAttachmentError("PO"))
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_fetch_from_outlook_maps_missing_attachment_to_422(mock_load, mock_fetch):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 422
+
+
+@patch("api.main.fetch_po_and_contract_attachments", side_effect=GraphApiError("boom"))
+@patch("api.main.load_outlook_config", return_value=FAKE_OUTLOOK_CONFIG)
+def test_fetch_from_outlook_maps_graph_api_error_to_502(mock_load, mock_fetch):
+    response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 502

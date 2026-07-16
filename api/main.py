@@ -18,7 +18,17 @@ load_dotenv()
 from api.auth import require_api_key
 from crews.extraction_crew import run_extraction_crew
 from crews.validation_crew import run_validation_crew
+from outlook.config_store import load_config as load_outlook_config
+from outlook.config_store import save_config as save_outlook_config
+from outlook.graph_client import (
+    GraphApiError,
+    MissingAttachmentError,
+    NoMatchingEmailError,
+    OutlookAuthError,
+    fetch_po_and_contract_attachments,
+)
 from schemas.discrepancy_schema import ValidationReport
+from schemas.outlook_schema import OutlookConfig
 from utils.report_writer import write_report
 
 logger = logging.getLogger(__name__)
@@ -90,3 +100,75 @@ def validate(
         )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class OutlookConfigResponse(BaseModel):
+    tenant_id: str
+    client_id: str
+    mailbox: str
+    subject_filter: str
+    client_secret_set: bool
+
+
+class OutlookFetchResponse(BaseModel):
+    po_pdf_base64: str
+    contract_pdf_base64: str
+
+
+def _to_outlook_config_response(config: OutlookConfig) -> OutlookConfigResponse:
+    return OutlookConfigResponse(
+        tenant_id=config.tenant_id,
+        client_id=config.client_id,
+        mailbox=config.mailbox,
+        subject_filter=config.subject_filter,
+        client_secret_set=True,
+    )
+
+
+@app.get(
+    "/outlook/config",
+    response_model=OutlookConfigResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def get_outlook_config() -> OutlookConfigResponse:
+    config = load_outlook_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="Outlook is not configured yet")
+    return _to_outlook_config_response(config)
+
+
+@app.post(
+    "/outlook/config",
+    response_model=OutlookConfigResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def post_outlook_config(config: OutlookConfig) -> OutlookConfigResponse:
+    save_outlook_config(config)
+    return _to_outlook_config_response(config)
+
+
+@app.post(
+    "/outlook/fetch",
+    response_model=OutlookFetchResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def fetch_from_outlook() -> OutlookFetchResponse:
+    config = load_outlook_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="Outlook is not configured yet")
+
+    try:
+        po_bytes, contract_bytes = fetch_po_and_contract_attachments(config)
+    except OutlookAuthError as error:
+        raise HTTPException(status_code=401, detail=f"Outlook authentication failed: {error}")
+    except NoMatchingEmailError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except MissingAttachmentError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except GraphApiError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    return OutlookFetchResponse(
+        po_pdf_base64=base64.b64encode(po_bytes).decode("ascii"),
+        contract_pdf_base64=base64.b64encode(contract_bytes).decode("ascii"),
+    )

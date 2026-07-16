@@ -1,4 +1,10 @@
-import type { ApiError, ValidateResponse } from './types'
+import type {
+  ApiError,
+  OutlookConfigInput,
+  OutlookConfigResponse,
+  OutlookFetchResponse,
+  ValidateResponse,
+} from './types'
 
 export interface ValidateFiles {
   poPdfFile: File
@@ -66,4 +72,92 @@ export async function validate(
   }
 
   return (await response.json()) as ValidateResponse
+}
+
+function outlookMessageForStatus(status: number, detail: unknown): string {
+  if (typeof detail === 'string' && detail.length > 0) {
+    return detail
+  }
+  if (status === 401) {
+    return 'Outlook authentication failed — check your connection settings'
+  }
+  if (status === 404) {
+    return 'Outlook is not configured, or no matching email was found'
+  }
+  if (status === 422) {
+    return 'The matching email is missing a required attachment'
+  }
+  if (status === 502) {
+    return 'Outlook (Microsoft Graph) returned an error'
+  }
+  return `Unexpected error (status ${status})`
+}
+
+async function outlookRequest<T>(
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  init: RequestInit,
+): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: { ...(init.headers ?? {}), 'X-API-Key': apiKey },
+    })
+  } catch {
+    const apiError: ApiError = {
+      status: 0,
+      message:
+        'Could not reach the API — check the URL in Settings and that the server is running',
+    }
+    throw apiError
+  }
+
+  if (!response.ok) {
+    let detail: unknown
+    try {
+      const body = await response.json()
+      detail = body?.detail
+    } catch {
+      detail = undefined
+    }
+    const apiError: ApiError = {
+      status: response.status,
+      message: outlookMessageForStatus(response.status, detail),
+    }
+    throw apiError
+  }
+
+  return (await response.json()) as T
+}
+
+export async function getOutlookConfig(
+  baseUrl: string,
+  apiKey: string,
+): Promise<OutlookConfigResponse> {
+  return outlookRequest<OutlookConfigResponse>(baseUrl, apiKey, '/outlook/config', {
+    method: 'GET',
+  })
+}
+
+export async function saveOutlookConfig(
+  baseUrl: string,
+  apiKey: string,
+  config: OutlookConfigInput,
+): Promise<OutlookConfigResponse> {
+  return outlookRequest<OutlookConfigResponse>(baseUrl, apiKey, '/outlook/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+}
+
+export async function fetchFromOutlook(
+  baseUrl: string,
+  apiKey: string,
+): Promise<OutlookFetchResponse> {
+  return outlookRequest<OutlookFetchResponse>(baseUrl, apiKey, '/outlook/fetch', {
+    method: 'POST',
+  })
 }

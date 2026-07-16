@@ -7,3 +7,4 @@ __pycache__/
 .claude/
 output/*.json
 *.pdf
+config/outlook_config.json

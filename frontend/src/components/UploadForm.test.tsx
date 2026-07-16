@@ -1,13 +1,24 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UploadForm } from './UploadForm'
+import * as api from '../api'
+
+vi.mock('../api', () => ({
+  fetchFromOutlook: vi.fn(),
+}))
+
+const mockFetchFromOutlook = vi.mocked(api.fetchFromOutlook)
 
 function makeFile(name: string, content: string, type: string): File {
   return new File([content], name, { type })
 }
 
 describe('UploadForm', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('keeps Validate disabled until all three files are chosen', async () => {
     const user = userEvent.setup()
     render(
@@ -97,5 +108,52 @@ describe('UploadForm', () => {
     )
 
     expect(screen.getByText('Invalid API key — check Settings')).toBeInTheDocument()
+  })
+
+  it('populates the PO and Contract file slots when Fetch from Outlook succeeds', async () => {
+    const user = userEvent.setup()
+    mockFetchFromOutlook.mockResolvedValue({
+      po_pdf_base64: btoa('%PDF po content'),
+      contract_pdf_base64: btoa('%PDF contract content'),
+    })
+
+    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
+
+    expect(await screen.findByText('Selected: po.pdf')).toBeInTheDocument()
+    expect(screen.getByText('Selected: contract.pdf')).toBeInTheDocument()
+  })
+
+  it('shows a fetching label while the Outlook request is in flight', async () => {
+    const user = userEvent.setup()
+    let resolveFetch: (value: { po_pdf_base64: string; contract_pdf_base64: string }) => void = () => {}
+    mockFetchFromOutlook.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve
+      }),
+    )
+
+    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
+
+    expect(await screen.findByRole('button', { name: 'Fetching from Outlook…' })).toBeDisabled()
+
+    resolveFetch({ po_pdf_base64: btoa('a'), contract_pdf_base64: btoa('b') })
+    expect(await screen.findByRole('button', { name: 'Fetch from Outlook' })).toBeEnabled()
+  })
+
+  it('shows an error banner when Fetch from Outlook fails', async () => {
+    const user = userEvent.setup()
+    mockFetchFromOutlook.mockRejectedValue({
+      status: 404,
+      message: 'Outlook is not configured, or no matching email was found',
+    })
+
+    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
+
+    expect(
+      await screen.findByText('Outlook is not configured, or no matching email was found'),
+    ).toBeInTheDocument()
   })
 })

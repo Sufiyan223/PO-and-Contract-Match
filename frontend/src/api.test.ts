@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { validate } from './api'
-import type { ApiError } from './types'
+import { fetchFromOutlook, getOutlookConfig, saveOutlookConfig, validate } from './api'
+import type { ApiError, OutlookConfigInput } from './types'
 
 function makeFile(name: string, content: string, type: string): File {
   return new File([content], name, { type })
@@ -98,5 +98,133 @@ describe('validate', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError))
 
     await expect(validate('http://localhost:8000', 'my-key', files)).rejects.toBe(abortError)
+  })
+})
+
+describe('getOutlookConfig', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends a GET request with the X-API-Key header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tenant_id: 't',
+          client_id: 'c',
+          mailbox: 'm@clientco.com',
+          subject_filter: 'PO',
+          client_secret_set: true,
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getOutlookConfig('http://localhost:8000', 'my-key')
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8000/outlook/config', {
+      method: 'GET',
+      headers: { 'X-API-Key': 'my-key' },
+    })
+    expect(result.client_secret_set).toBe(true)
+  })
+
+  it('maps a 404 response using the API detail message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: 'Outlook is not configured yet' }), { status: 404 }),
+      ),
+    )
+
+    await expect(getOutlookConfig('http://localhost:8000', 'my-key')).rejects.toMatchObject({
+      status: 404,
+      message: 'Outlook is not configured yet',
+    } satisfies ApiError)
+  })
+})
+
+describe('saveOutlookConfig', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const config: OutlookConfigInput = {
+    tenant_id: 't',
+    client_id: 'c',
+    client_secret: 's',
+    mailbox: 'm@clientco.com',
+    subject_filter: 'PO',
+  }
+
+  it('sends a POST request with the config as JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tenant_id: 't',
+          client_id: 'c',
+          mailbox: 'm@clientco.com',
+          subject_filter: 'PO',
+          client_secret_set: true,
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await saveOutlookConfig('http://localhost:8000', 'my-key', config)
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8000/outlook/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'my-key' },
+      body: JSON.stringify(config),
+    })
+  })
+})
+
+describe('fetchFromOutlook', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns the base64 PDFs on success', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ po_pdf_base64: 'po-b64', contract_pdf_base64: 'contract-b64' }), {
+          status: 200,
+        }),
+      ),
+    )
+
+    const result = await fetchFromOutlook('http://localhost:8000', 'my-key')
+    expect(result).toEqual({ po_pdf_base64: 'po-b64', contract_pdf_base64: 'contract-b64' })
+  })
+
+  it('maps a 422 response using the API detail message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: 'PO attachment not found in the matching email' }),
+          { status: 422 },
+        ),
+      ),
+    )
+
+    await expect(fetchFromOutlook('http://localhost:8000', 'my-key')).rejects.toMatchObject({
+      status: 422,
+      message: 'PO attachment not found in the matching email',
+    } satisfies ApiError)
+  })
+
+  it('maps a network failure to a "could not reach the API" error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    await expect(fetchFromOutlook('http://localhost:8000', 'my-key')).rejects.toMatchObject({
+      status: 0,
+      message: 'Could not reach the API — check the URL in Settings and that the server is running',
+    } satisfies ApiError)
   })
 })

@@ -31,3 +31,24 @@ export interface ApiError {
   status: number
   message: string
 }
+
+export interface OutlookConfigInput {
+  tenant_id: string
+  client_id: string
+  client_secret: string
+  mailbox: string
+  subject_filter: string
+}
+
+export interface OutlookConfigResponse {
+  tenant_id: string
+  client_id: string
+  mailbox: string
+  subject_filter: string
+  client_secret_set: boolean
+}
+
+export interface OutlookFetchResponse {
+  po_pdf_base64: string
+  contract_pdf_base64: string
+}

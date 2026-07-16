@@ -75,7 +75,7 @@ Rejected alternatives:
 Covers:
 - Happy path — valid request returns `200` with the expected JSON shape.
 - Missing/invalid API key → `401`.
-- Invalid `sap_record` JSON → `400`.
+- Invalid `sap_record` JSON, or valid JSON that isn't an object → `400`.
 - Missing file field → `400`.
 
 ## Dependencies

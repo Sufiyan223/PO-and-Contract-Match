@@ -1,4 +1,5 @@
 import json
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,34 @@ from fpdf.fonts import FontFace
 from schemas.discrepancy_schema import ValidationReport
 
 OUTPUT_DIR = Path(__file__).parent.parent / "output"
+
+_CHAR_REPLACEMENTS = {
+    "–": "-",  # en dash
+    "—": "-",  # em dash
+    "‘": "'",  # left single quote
+    "’": "'",  # right single quote
+    "“": '"',  # left double quote
+    "”": '"',  # right double quote
+    "…": "...",  # ellipsis
+    " ": " ",  # non-breaking space
+    "•": "-",  # bullet
+    "₹": "INR ",  # rupee sign
+}
+
+
+def _sanitize_text(text: str) -> str:
+    """Make LLM-generated text safe for the PDF's core "helvetica" font.
+
+    The core fonts only support Latin-1/WinAnsi encoding, but LLM output
+    routinely includes characters outside that range (en/em dashes, curly
+    quotes, currency symbols, emoji). Known punctuation is mapped to a
+    plain-ASCII equivalent first; anything else unsupported is dropped so
+    report generation never crashes on real model output.
+    """
+    for unicode_char, replacement in _CHAR_REPLACEMENTS.items():
+        text = text.replace(unicode_char, replacement)
+    normalized = unicodedata.normalize("NFKD", text)
+    return normalized.encode("latin-1", "ignore").decode("latin-1")
 
 STATUS_COLORS = {
     "PASS": (0, 128, 0),
@@ -74,7 +103,7 @@ def _write_pdf_section(pdf: FPDF, report: ValidationReport) -> None:
     pdf.set_text_color(0, 0, 0)
 
     pdf.set_font("Helvetica", size=10)
-    pdf.multi_cell(0, 6, report.summary)
+    pdf.multi_cell(0, 6, _sanitize_text(report.summary))
     pdf.ln(2)
 
     flagged = [d for d in report.discrepancies if d.severity != "match"]
@@ -96,14 +125,14 @@ def _write_pdf_section(pdf: FPDF, report: ValidationReport) -> None:
             header_row.cell(label)
         for item in flagged:
             row = table.row()
-            row.cell(item.field)
-            row.cell(item.source_a)
-            row.cell(item.source_b)
+            row.cell(_sanitize_text(item.field))
+            row.cell(_sanitize_text(item.source_a))
+            row.cell(_sanitize_text(item.source_b))
             row.cell(
                 item.severity,
                 style=FontFace(color=SEVERITY_COLORS.get(item.severity, (0, 0, 0))),
             )
-            row.cell(item.note)
+            row.cell(_sanitize_text(item.note))
     pdf.ln(6)
 
 

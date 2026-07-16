@@ -100,6 +100,33 @@ def test_pdf_report_is_valid_pdf(tmp_path, monkeypatch):
     assert pdf_path.read_bytes().startswith(b"%PDF")
 
 
+def test_pdf_report_handles_unicode_characters(tmp_path, monkeypatch):
+    import utils.report_writer as rw
+    monkeypatch.setattr(rw, "OUTPUT_DIR", tmp_path)
+
+    sap_report = ValidationReport(
+        validation_type="PO_vs_SAP",
+        summary="Prices differ – the PO lists ₹45,00,000 — “fixed” per the contract.",
+        discrepancies=[
+            DiscrepancyItem(
+                field="contract_price",
+                source_a="INR 45,00,000",
+                source_b="INR 45,50,000",
+                severity="major",
+                note="Price differs by ₹50,000 – flagged as major.",
+            )
+        ],
+        overall_status="FAIL",
+    )
+    contract_report = _make_report("PO_vs_Contract", "PASS")
+
+    output_path = write_report(sap_report, contract_report)
+    pdf_path = output_path.with_suffix(".pdf")
+
+    assert pdf_path.exists()
+    assert pdf_path.read_bytes().startswith(b"%PDF")
+
+
 def test_pdf_report_handles_no_discrepancies(tmp_path, monkeypatch):
     import utils.report_writer as rw
     monkeypatch.setattr(rw, "OUTPUT_DIR", tmp_path)

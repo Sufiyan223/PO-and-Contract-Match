@@ -52,3 +52,25 @@ export interface OutlookFetchResponse {
   po_pdf_base64: string
   contract_pdf_base64: string
 }
+
+export interface SapConfigInput {
+  ashost: string
+  sysnr: string
+  client: string
+  username: string
+  password: string
+  gwhost: string
+  gwserv: string
+}
+
+export interface SapConfigResponse {
+  ashost: string
+  sysnr: string
+  client: string
+  username: string
+  gwhost: string
+  gwserv: string
+  password_set: boolean
+}
+
+export type SapPoRecord = Record<string, string>

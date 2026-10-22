@@ -1,5 +1,4 @@
 import base64
-import json
 import logging
 import os
 import shutil
@@ -7,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -27,8 +26,17 @@ from outlook.graph_client import (
     OutlookAuthError,
     fetch_po_and_contract_attachments,
 )
+from sap.config_store import load_config as load_sap_config
+from sap.config_store import save_config as save_sap_config
+from sap.rfc_client import (
+    PurchaseOrderNotFoundError,
+    SapApiError,
+    SapAuthError,
+    fetch_po_record,
+)
 from schemas.discrepancy_schema import ValidationReport
 from schemas.outlook_schema import OutlookConfig
+from schemas.sap_schema import SapConfig
 from utils.report_writer import write_report
 
 logger = logging.getLogger(__name__)
@@ -37,7 +45,15 @@ app = FastAPI(title="PO and Contract Match API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")],
+    # Comma-separated. The default covers the Vite dev server under both
+    # names, since some browsers resolve "localhost" to IPv6 only.
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "FRONTEND_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
@@ -56,6 +72,23 @@ class ValidateResponse(BaseModel):
     report_pdf_base64: str
 
 
+def _fetch_sap_record_for(config: SapConfig, po_number: str) -> dict[str, str]:
+    po_number = (po_number or "").strip()
+    if not po_number or po_number.upper() == "NOT FOUND":
+        raise HTTPException(status_code=422, detail="Could not read a PO number from the PO document")
+    try:
+        return fetch_po_record(config, po_number)
+    except PurchaseOrderNotFoundError as error:
+        raise HTTPException(
+            status_code=404, detail=f"{error} (PO number read from the PO document: {po_number})"
+        )
+    except SapAuthError as error:
+        # 502 rather than 401, so it isn't mistaken for a bad API key.
+        raise HTTPException(status_code=502, detail=f"SAP authentication failed: {error}")
+    except SapApiError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+
 @app.post(
     "/validate",
     response_model=ValidateResponse,
@@ -64,14 +97,12 @@ class ValidateResponse(BaseModel):
 def validate(
     po_pdf: UploadFile = File(...),
     contract_pdf: UploadFile = File(...),
-    sap_record: str = Form(...),
 ) -> ValidateResponse:
-    try:
-        sap_record_dict = json.loads(sap_record)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="sap_record must be valid JSON")
-    if not isinstance(sap_record_dict, dict):
-        raise HTTPException(status_code=400, detail="sap_record must be a JSON object")
+    sap_config = load_sap_config()
+    if sap_config is None:
+        raise HTTPException(
+            status_code=400, detail="SAP is not configured yet — set up the SAP connection in Settings"
+        )
 
     temp_dir = Path(tempfile.mkdtemp(prefix="po_contract_match_"))
     try:
@@ -82,8 +113,17 @@ def validate(
 
         try:
             po_details, contract_details = run_extraction_crew(str(po_path), str(contract_path))
+        except Exception:
+            logger.exception("Extraction failed while processing /validate request")
+            raise HTTPException(status_code=500, detail="Validation pipeline failed")
+
+        # The SAP record always comes live from SAP, for the PO number on the
+        # uploaded PO document — never from the caller.
+        sap_record = _fetch_sap_record_for(sap_config, po_details.po_number)
+
+        try:
             sap_report, contract_report = run_validation_crew(
-                po_details, contract_details, sap_record_dict
+                po_details, contract_details, sap_record
             )
             report_json_path = write_report(sap_report, contract_report)
         except Exception:
@@ -172,3 +212,71 @@ def fetch_from_outlook() -> OutlookFetchResponse:
         po_pdf_base64=base64.b64encode(po_bytes).decode("ascii"),
         contract_pdf_base64=base64.b64encode(contract_bytes).decode("ascii"),
     )
+
+
+class SapConfigResponse(BaseModel):
+    ashost: str
+    sysnr: str
+    client: str
+    username: str
+    gwhost: str
+    gwserv: str
+    password_set: bool
+
+
+class SapPoRecordRequest(BaseModel):
+    po_number: str
+
+
+def _to_sap_config_response(config: SapConfig) -> SapConfigResponse:
+    return SapConfigResponse(
+        ashost=config.ashost,
+        sysnr=config.sysnr,
+        client=config.client,
+        username=config.username,
+        gwhost=config.gwhost,
+        gwserv=config.gwserv,
+        password_set=True,
+    )
+
+
+@app.get(
+    "/sap/config",
+    response_model=SapConfigResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def get_sap_config() -> SapConfigResponse:
+    config = load_sap_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="SAP is not configured yet")
+    return _to_sap_config_response(config)
+
+
+@app.post(
+    "/sap/config",
+    response_model=SapConfigResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def post_sap_config(config: SapConfig) -> SapConfigResponse:
+    save_sap_config(config)
+    return _to_sap_config_response(config)
+
+
+@app.post(
+    "/sap/po-record",
+    response_model=dict[str, str],
+    dependencies=[Depends(require_api_key)],
+)
+def fetch_sap_po_record(request: SapPoRecordRequest) -> dict[str, str]:
+    config = load_sap_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="SAP is not configured yet")
+
+    try:
+        return fetch_po_record(config, request.po_number)
+    except SapAuthError as error:
+        raise HTTPException(status_code=401, detail=f"SAP authentication failed: {error}")
+    except PurchaseOrderNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except SapApiError as error:
+        raise HTTPException(status_code=502, detail=str(error))

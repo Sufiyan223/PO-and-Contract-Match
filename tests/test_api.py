@@ -14,8 +14,10 @@ from outlook.graph_client import (
 )
 from schemas.contract_schema import ContractDetails
 from schemas.discrepancy_schema import DiscrepancyItem, ValidationReport
+from sap.rfc_client import PurchaseOrderNotFoundError, SapApiError, SapAuthError
 from schemas.outlook_schema import OutlookConfig
 from schemas.po_schema import PODetails
+from schemas.sap_schema import SapConfig
 
 client = TestClient(app)
 
@@ -29,6 +31,8 @@ FAKE_PO = PODetails(
     liquidated_damage="0.5% per week, max 5%",
     pricing_info="Fixed price",
     contact_info="procurement@clientco.com",
+    vendor_name="ABC Engineering Services Pvt. Ltd.",
+    vendor_code="VENDOR-0089234",
     confidence_notes="",
 )
 
@@ -89,15 +93,26 @@ def _upload_files():
     }
 
 
+VALIDATE_SAP_CONFIG = SapConfig(
+    ashost="sap.example.com",
+    sysnr="00",
+    client="100",
+    username="TECH_USER",
+    password="super-secret",
+)
+SAP_RECORD = {"po_number": "CC-PO-2025-001234", "contract_price": "INR 45,00,000.00"}
+
+
+def _post_validate(**kwargs):
+    return client.post("/validate", headers={"X-API-Key": "test-key"}, files=_upload_files(), **kwargs)
+
+
 @patch("api.main.run_validation_crew", return_value=(FAKE_SAP_REPORT, FAKE_CONTRACT_REPORT))
+@patch("api.main.fetch_po_record", return_value=SAP_RECORD)
 @patch("api.main.run_extraction_crew", return_value=(FAKE_PO, FAKE_CONTRACT))
-def test_validate_happy_path(mock_extraction, mock_validation):
-    response = client.post(
-        "/validate",
-        headers={"X-API-Key": "test-key"},
-        files=_upload_files(),
-        data={"sap_record": json.dumps({"po_number": "CC-PO-2025-001234"})},
-    )
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_happy_path(mock_config, mock_extraction, mock_fetch, mock_validation):
+    response = _post_validate()
     assert response.status_code == 200
     body = response.json()
     assert body["sap_validation"]["overall_status"] == "PASS"
@@ -105,63 +120,96 @@ def test_validate_happy_path(mock_extraction, mock_validation):
     assert base64.b64decode(body["report_pdf_base64"]).startswith(b"%PDF")
 
 
+@patch("api.main.run_validation_crew", return_value=(FAKE_SAP_REPORT, FAKE_CONTRACT_REPORT))
+@patch("api.main.fetch_po_record", return_value=SAP_RECORD)
+@patch("api.main.run_extraction_crew", return_value=(FAKE_PO, FAKE_CONTRACT))
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_fetches_sap_record_for_the_po_number_on_the_document(
+    mock_config, mock_extraction, mock_fetch, mock_validation
+):
+    _post_validate()
+
+    mock_fetch.assert_called_once_with(VALIDATE_SAP_CONFIG, FAKE_PO.po_number)
+    assert mock_validation.call_args.args[2] == SAP_RECORD
+
+
+@patch("api.main.run_validation_crew", return_value=(FAKE_SAP_REPORT, FAKE_CONTRACT_REPORT))
+@patch("api.main.fetch_po_record", return_value=SAP_RECORD)
+@patch("api.main.run_extraction_crew", return_value=(FAKE_PO, FAKE_CONTRACT))
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_ignores_a_caller_supplied_sap_record(mock_config, mock_extraction, mock_fetch, mock_validation):
+    response = _post_validate(data={"sap_record": json.dumps({"po_number": "forged"})})
+
+    assert response.status_code == 200
+    assert mock_validation.call_args.args[2] == SAP_RECORD
+
+
 def test_validate_missing_api_key():
-    response = client.post(
-        "/validate",
-        files=_upload_files(),
-        data={"sap_record": "{}"},
-    )
+    response = client.post("/validate", files=_upload_files())
     assert response.status_code == 401
 
 
 def test_validate_wrong_api_key():
-    response = client.post(
-        "/validate",
-        headers={"X-API-Key": "wrong-key"},
-        files=_upload_files(),
-        data={"sap_record": "{}"},
-    )
+    response = client.post("/validate", headers={"X-API-Key": "wrong-key"}, files=_upload_files())
     assert response.status_code == 401
 
 
-def test_validate_invalid_sap_record_json():
-    response = client.post(
-        "/validate",
-        headers={"X-API-Key": "test-key"},
-        files=_upload_files(),
-        data={"sap_record": "not valid json"},
-    )
-    assert response.status_code == 400
-
-
-def test_validate_sap_record_not_a_json_object():
-    response = client.post(
-        "/validate",
-        headers={"X-API-Key": "test-key"},
-        files=_upload_files(),
-        data={"sap_record": "42"},
-    )
-    assert response.status_code == 400
-
-
-def test_validate_missing_required_field():
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_missing_required_field(mock_config):
     response = client.post(
         "/validate",
         headers={"X-API-Key": "test-key"},
         files={"po_pdf": ("po.pdf", b"%PDF-1.4 fake po content", "application/pdf")},
-        data={"sap_record": "{}"},
     )
     assert response.status_code == 400
 
 
+@patch("api.main.run_extraction_crew")
+@patch("api.main.load_sap_config", return_value=None)
+def test_validate_returns_400_when_sap_is_not_configured(mock_config, mock_extraction):
+    response = _post_validate()
+
+    assert response.status_code == 400
+    assert "SAP is not configured" in response.json()["detail"]
+    mock_extraction.assert_not_called()
+
+
+@pytest.mark.parametrize("po_number", ["", "NOT FOUND"])
+@patch("api.main.fetch_po_record")
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_returns_422_when_the_po_has_no_po_number(mock_config, mock_fetch, po_number):
+    po = FAKE_PO.model_copy(update={"po_number": po_number})
+    with patch("api.main.run_extraction_crew", return_value=(po, FAKE_CONTRACT)):
+        response = _post_validate()
+
+    assert response.status_code == 422
+    mock_fetch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error, status_code, detail",
+    [
+        (PurchaseOrderNotFoundError("PO CC-PO-2025-001234 was not found in SAP"), 404, "was not found in SAP"),
+        (SapAuthError("Name or password is incorrect"), 502, "SAP authentication failed"),
+        (SapApiError("Could not reach SAP: timed out"), 502, "Could not reach SAP"),
+    ],
+)
+@patch("api.main.run_validation_crew")
+@patch("api.main.run_extraction_crew", return_value=(FAKE_PO, FAKE_CONTRACT))
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_maps_sap_errors(mock_config, mock_extraction, mock_validation, error, status_code, detail):
+    with patch("api.main.fetch_po_record", side_effect=error):
+        response = _post_validate()
+
+    assert response.status_code == status_code
+    assert detail in response.json()["detail"]
+    mock_validation.assert_not_called()
+
+
 @patch("api.main.run_extraction_crew", side_effect=RuntimeError("LLM API error"))
-def test_validate_pipeline_failure(mock_extraction):
-    response = client.post(
-        "/validate",
-        headers={"X-API-Key": "test-key"},
-        files=_upload_files(),
-        data={"sap_record": "{}"},
-    )
+@patch("api.main.load_sap_config", return_value=VALIDATE_SAP_CONFIG)
+def test_validate_pipeline_failure(mock_config, mock_extraction):
+    response = _post_validate()
     assert response.status_code == 500
 
 
@@ -257,3 +305,109 @@ def test_fetch_from_outlook_maps_missing_attachment_to_422(mock_load, mock_fetch
 def test_fetch_from_outlook_maps_graph_api_error_to_502(mock_load, mock_fetch):
     response = client.post("/outlook/fetch", headers={"X-API-Key": "test-key"})
     assert response.status_code == 502
+
+
+FAKE_SAP_CONFIG = SapConfig(
+    ashost="sap.example.com",
+    sysnr="00",
+    client="100",
+    username="TECH_USER",
+    password="super-secret",
+)
+
+
+def test_get_sap_config_requires_api_key():
+    response = client.get("/sap/config")
+    assert response.status_code == 401
+
+
+@patch("api.main.load_sap_config", return_value=None)
+def test_get_sap_config_returns_404_when_not_configured(mock_load):
+    response = client.get("/sap/config", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 404
+
+
+@patch("api.main.load_sap_config", return_value=FAKE_SAP_CONFIG)
+def test_get_sap_config_masks_the_password(mock_load):
+    response = client.get("/sap/config", headers={"X-API-Key": "test-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["password_set"] is True
+    assert "password" not in body
+    assert body["username"] == "TECH_USER"
+    assert body["sysnr"] == "00"
+    assert body["gwhost"] == ""
+
+
+@patch("api.main.save_sap_config")
+def test_post_sap_config_saves_and_returns_masked_response(mock_save):
+    response = client.post(
+        "/sap/config",
+        headers={"X-API-Key": "test-key"},
+        json={
+            "ashost": "sap.example.com",
+            "sysnr": "00",
+            "client": "100",
+            "username": "TECH_USER",
+            "password": "super-secret",
+        },
+    )
+    assert response.status_code == 200
+    assert "password" not in response.json()
+    saved_config = mock_save.call_args.args[0]
+    assert saved_config.password == "super-secret"
+    assert saved_config.ashost == "sap.example.com"
+
+
+@patch("api.main.load_sap_config", return_value=None)
+def test_fetch_sap_po_record_returns_404_when_not_configured(mock_load):
+    response = client.post(
+        "/sap/po-record", headers={"X-API-Key": "test-key"}, json={"po_number": "4500000123"}
+    )
+    assert response.status_code == 404
+
+
+@patch("api.main.fetch_po_record", return_value={"po_number": "4500000123", "vendor_code": "89234"})
+@patch("api.main.load_sap_config", return_value=FAKE_SAP_CONFIG)
+def test_fetch_sap_po_record_returns_record_on_success(mock_load, mock_fetch):
+    response = client.post(
+        "/sap/po-record", headers={"X-API-Key": "test-key"}, json={"po_number": "4500000123"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"po_number": "4500000123", "vendor_code": "89234"}
+    mock_fetch.assert_called_once_with(FAKE_SAP_CONFIG, "4500000123")
+
+
+@pytest.mark.parametrize(
+    "error, status_code",
+    [
+        (SapAuthError("bad password"), 401),
+        (PurchaseOrderNotFoundError("PO 1 was not found in SAP"), 404),
+        (SapApiError("boom"), 502),
+    ],
+)
+@patch("api.main.load_sap_config", return_value=FAKE_SAP_CONFIG)
+def test_fetch_sap_po_record_maps_errors(mock_load, error, status_code):
+    with patch("api.main.fetch_po_record", side_effect=error):
+        response = client.post(
+            "/sap/po-record", headers={"X-API-Key": "test-key"}, json={"po_number": "1"}
+        )
+    assert response.status_code == status_code
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:5173"])
+def test_cors_allows_the_dev_server_under_both_names(origin):
+    response = client.options(
+        "/validate",
+        headers={"Origin": origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-api-key"},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_cors_rejects_other_origins():
+    response = client.options(
+        "/validate",
+        headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert "access-control-allow-origin" not in response.headers

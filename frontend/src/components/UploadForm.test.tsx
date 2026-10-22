@@ -1,25 +1,14 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UploadForm } from './UploadForm'
-import * as api from '../api'
-
-vi.mock('../api', () => ({
-  fetchFromOutlook: vi.fn(),
-}))
-
-const mockFetchFromOutlook = vi.mocked(api.fetchFromOutlook)
 
 function makeFile(name: string, content: string, type: string): File {
   return new File([content], name, { type })
 }
 
 describe('UploadForm', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('keeps Validate disabled until all three files are chosen', async () => {
+  it('keeps Validate disabled until both PDFs are chosen', async () => {
     const user = userEvent.setup()
     render(
       <UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />,
@@ -34,33 +23,18 @@ describe('UploadForm', () => {
       screen.getByLabelText('Contract (PDF)'),
       makeFile('contract.pdf', 'x', 'application/pdf'),
     )
-    expect(screen.getByRole('button', { name: 'Validate' })).toBeDisabled()
-
-    await user.upload(
-      screen.getByLabelText('SAP Record (JSON)'),
-      makeFile('sap.json', '{"a": 1}', 'application/json'),
-    )
-    expect(await screen.findByRole('button', { name: 'Validate' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Validate' })).toBeEnabled()
   })
 
-  it('shows an inline error and keeps Validate disabled when the SAP file is not valid JSON', async () => {
-    const user = userEvent.setup()
+  it('has no SAP JSON upload, PO number field or Outlook fetch', () => {
     render(
       <UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />,
     )
 
-    await user.upload(screen.getByLabelText('Purchase Order (PDF)'), makeFile('po.pdf', 'x', 'application/pdf'))
-    await user.upload(
-      screen.getByLabelText('Contract (PDF)'),
-      makeFile('contract.pdf', 'x', 'application/pdf'),
-    )
-    await user.upload(
-      screen.getByLabelText('SAP Record (JSON)'),
-      makeFile('sap.json', 'not json', 'application/json'),
-    )
-
-    expect(await screen.findByText('This file is not valid JSON.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Validate' })).toBeDisabled()
+    expect(screen.queryByLabelText('SAP Record (JSON)')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('SAP PO number')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fetch from Outlook' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fetch from SAP' })).not.toBeInTheDocument()
   })
 
   it('calls onSubmit with the chosen files when the form is submitted', async () => {
@@ -74,21 +48,16 @@ describe('UploadForm', () => {
     const contractFile = makeFile('contract.pdf', 'x', 'application/pdf')
     await user.upload(screen.getByLabelText('Purchase Order (PDF)'), poFile)
     await user.upload(screen.getByLabelText('Contract (PDF)'), contractFile)
-    await user.upload(screen.getByLabelText('SAP Record (JSON)'), makeFile('sap.json', '{"a": 1}', 'application/json'))
 
-    await user.click(await screen.findByRole('button', { name: 'Validate' }))
+    await user.click(screen.getByRole('button', { name: 'Validate' }))
 
-    expect(onSubmit).toHaveBeenCalledWith({
-      poPdfFile: poFile,
-      contractPdfFile: contractFile,
-      sapRecordText: '{"a": 1}',
-    })
+    expect(onSubmit).toHaveBeenCalledWith({ poPdfFile: poFile, contractPdfFile: contractFile })
   })
 
   it('shows the loading state and a Cancel button while isLoading is true', () => {
     render(<UploadForm isLoading={true} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
 
-    expect(screen.getByText(/this can take a minute or two/i)).toBeInTheDocument()
+    expect(screen.getByText(/fetching the PO from SAP/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Validate' })).not.toBeInTheDocument()
   })
@@ -104,56 +73,14 @@ describe('UploadForm', () => {
 
   it('shows the error banner when errorMessage is set', () => {
     render(
-      <UploadForm isLoading={false} errorMessage="Invalid API key — check Settings" onSubmit={vi.fn()} onCancel={vi.fn()} />,
+      <UploadForm
+        isLoading={false}
+        errorMessage="PO 4599999999 was not found in SAP (PO number read from the PO document: 4599999999)"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />,
     )
 
-    expect(screen.getByText('Invalid API key — check Settings')).toBeInTheDocument()
-  })
-
-  it('populates the PO and Contract file slots when Fetch from Outlook succeeds', async () => {
-    const user = userEvent.setup()
-    mockFetchFromOutlook.mockResolvedValue({
-      po_pdf_base64: btoa('%PDF po content'),
-      contract_pdf_base64: btoa('%PDF contract content'),
-    })
-
-    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
-    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
-
-    expect(await screen.findByText('po.pdf')).toBeInTheDocument()
-    expect(screen.getByText('contract.pdf')).toBeInTheDocument()
-  })
-
-  it('shows a fetching label while the Outlook request is in flight', async () => {
-    const user = userEvent.setup()
-    let resolveFetch: (value: { po_pdf_base64: string; contract_pdf_base64: string }) => void = () => {}
-    mockFetchFromOutlook.mockReturnValue(
-      new Promise((resolve) => {
-        resolveFetch = resolve
-      }),
-    )
-
-    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
-    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
-
-    expect(await screen.findByRole('button', { name: 'Fetching from Outlook…' })).toBeDisabled()
-
-    resolveFetch({ po_pdf_base64: btoa('a'), contract_pdf_base64: btoa('b') })
-    expect(await screen.findByRole('button', { name: 'Fetch from Outlook' })).toBeEnabled()
-  })
-
-  it('shows an error banner when Fetch from Outlook fails', async () => {
-    const user = userEvent.setup()
-    mockFetchFromOutlook.mockRejectedValue({
-      status: 404,
-      message: 'Outlook is not configured, or no matching email was found',
-    })
-
-    render(<UploadForm isLoading={false} errorMessage={null} onSubmit={vi.fn()} onCancel={vi.fn()} />)
-    await user.click(screen.getByRole('button', { name: 'Fetch from Outlook' }))
-
-    expect(
-      await screen.findByText('Outlook is not configured, or no matching email was found'),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/4599999999 was not found in SAP/)).toBeInTheDocument()
   })
 })

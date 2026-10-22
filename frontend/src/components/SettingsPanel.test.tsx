@@ -8,10 +8,14 @@ import type { ApiError, OutlookConfigResponse } from '../types'
 vi.mock('../api', () => ({
   getOutlookConfig: vi.fn(),
   saveOutlookConfig: vi.fn(),
+  getSapConfig: vi.fn(),
+  saveSapConfig: vi.fn(),
 }))
 
 const mockGetOutlookConfig = vi.mocked(api.getOutlookConfig)
 const mockSaveOutlookConfig = vi.mocked(api.saveOutlookConfig)
+const mockGetSapConfig = vi.mocked(api.getSapConfig)
+const mockSaveSapConfig = vi.mocked(api.saveSapConfig)
 
 function notConfiguredError(): ApiError {
   return { status: 404, message: 'Outlook is not configured yet' }
@@ -21,6 +25,8 @@ describe('SettingsPanel — Outlook Connection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+    localStorage.setItem('poContractMatch.apiKey', 'test-key')
+    mockGetSapConfig.mockRejectedValue({ status: 404, message: 'SAP is not configured yet' })
   })
 
   it('leaves the fields blank when Outlook is not configured yet (404)', async () => {
@@ -96,16 +102,126 @@ describe('SettingsPanel — SAP Connection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+    localStorage.setItem('poContractMatch.apiKey', 'test-key')
     mockGetOutlookConfig.mockRejectedValue(notConfiguredError())
   })
 
-  it('shows a "not yet available" message when Connect to SAP is clicked', async () => {
+  it('pre-fills the SAP fields from the existing config without the password', async () => {
+    mockGetSapConfig.mockResolvedValue({
+      ashost: 'sap.example.com',
+      sysnr: '57',
+      client: '100',
+      username: 'TECH_USER',
+      gwhost: '',
+      gwserv: '',
+      password_set: true,
+    })
+
+    render(<SettingsPanel />)
+
+    expect(await screen.findByDisplayValue('sap.example.com')).toBeInTheDocument()
+    expect(screen.getByLabelText('SAP System Number')).toHaveValue('57')
+    expect(screen.getByLabelText('SAP Client')).toHaveValue('100')
+    expect(screen.getByLabelText('SAP Username')).toHaveValue('TECH_USER')
+    expect(screen.getByLabelText('SAP Password')).toHaveValue('')
+    expect(screen.getByLabelText('SAP Password')).toHaveAttribute('placeholder', 'SAP Password: configured ✓')
+  })
+
+  it('saves the SAP config and clears the password field on success', async () => {
+    const user = userEvent.setup()
+    mockGetSapConfig.mockRejectedValue({ status: 404, message: 'SAP is not configured yet' })
+    mockSaveSapConfig.mockResolvedValue({
+      ashost: 'sap.example.com',
+      sysnr: '57',
+      client: '100',
+      username: 'TECH_USER',
+      gwhost: '',
+      gwserv: '',
+      password_set: true,
+    })
+
+    render(<SettingsPanel />)
+    await waitFor(() => expect(mockGetSapConfig).toHaveBeenCalled())
+
+    await user.type(screen.getByLabelText('SAP Application Server'), 'sap.example.com')
+    await user.type(screen.getByLabelText('SAP System Number'), '57')
+    await user.type(screen.getByLabelText('SAP Client'), '100')
+    await user.type(screen.getByLabelText('SAP Username'), 'TECH_USER')
+    await user.type(screen.getByLabelText('SAP Password'), 'secret')
+    await user.type(screen.getByLabelText('SAP Gateway Host (optional)'), '10.0.0.5')
+    await user.type(screen.getByLabelText('SAP Gateway Service (optional)'), 'sapgw57')
+    await user.click(screen.getByRole('button', { name: 'Save SAP Connection' }))
+
+    await waitFor(() => expect(mockSaveSapConfig).toHaveBeenCalled())
+    expect(mockSaveSapConfig.mock.calls[0][2]).toEqual({
+      ashost: 'sap.example.com',
+      sysnr: '57',
+      client: '100',
+      username: 'TECH_USER',
+      password: 'secret',
+      gwhost: '10.0.0.5',
+      gwserv: 'sapgw57',
+    })
+    expect(screen.getByLabelText('SAP Password')).toHaveValue('')
+  })
+
+  it('shows an error banner when saving the SAP config fails', async () => {
+    const user = userEvent.setup()
+    mockGetSapConfig.mockRejectedValue({ status: 404, message: 'SAP is not configured yet' })
+    mockSaveSapConfig.mockRejectedValue({ status: 401, message: 'Invalid API key — check Settings' })
+
+    render(<SettingsPanel />)
+    await user.click(screen.getByRole('button', { name: 'Save SAP Connection' }))
+
+    expect(await screen.findByText('Invalid API key — check Settings')).toBeInTheDocument()
+  })
+})
+
+describe('SettingsPanel — API Connection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    mockGetOutlookConfig.mockRejectedValue(notConfiguredError())
+    mockGetSapConfig.mockRejectedValue({ status: 404, message: 'SAP is not configured yet' })
+  })
+
+  it('labels the key as the backend API_KEY, not the OpenRouter key', () => {
+    render(<SettingsPanel />)
+
+    expect(screen.getByLabelText('Backend API key (API_KEY in .env)')).toBeInTheDocument()
+    expect(screen.getByText(/Not the OpenRouter key/)).toBeInTheDocument()
+  })
+
+  it('does not call the backend until an API key is saved', async () => {
     const user = userEvent.setup()
     render(<SettingsPanel />)
 
-    expect(screen.queryByText('SAP integration is not yet available.')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Connect to SAP' }))
+    expect(mockGetSapConfig).not.toHaveBeenCalled()
+    expect(mockGetOutlookConfig).not.toHaveBeenCalled()
+    expect(screen.queryByText(/API key/i, { selector: '[role="alert"], .text-red-600' })).not.toBeInTheDocument()
 
-    expect(screen.getByText('SAP integration is not yet available.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Backend API key (API_KEY in .env)'), '"abc-123"')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(screen.getByLabelText('Backend API key (API_KEY in .env)')).toHaveValue('abc-123')
+    await waitFor(() => expect(mockGetSapConfig).toHaveBeenCalledTimes(1))
+    expect(mockGetSapConfig.mock.calls[0][1]).toBe('abc-123')
+  })
+
+  it('normalizes the saved URL and reloads the connections from it', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('poContractMatch.apiKey', 'abc-123')
+    render(<SettingsPanel />)
+    await waitFor(() => expect(mockGetSapConfig).toHaveBeenCalledTimes(1))
+
+    const urlField = screen.getByLabelText('API base URL')
+    await user.clear(urlField)
+    await user.type(urlField, '127.0.0.1:8000/')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(urlField).toHaveValue('http://127.0.0.1:8000')
+    await waitFor(() => expect(mockGetSapConfig).toHaveBeenCalledTimes(2))
+    expect(mockGetSapConfig.mock.calls[1][0]).toBe('http://127.0.0.1:8000')
+    expect(mockGetOutlookConfig.mock.calls.at(-1)?.[0]).toBe('http://127.0.0.1:8000')
   })
 })

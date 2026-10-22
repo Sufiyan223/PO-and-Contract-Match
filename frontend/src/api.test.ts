@@ -9,7 +9,6 @@ function makeFile(name: string, content: string, type: string): File {
 const files = {
   poPdfFile: makeFile('po.pdf', '%PDF-1.4', 'application/pdf'),
   contractPdfFile: makeFile('contract.pdf', '%PDF-1.4', 'application/pdf'),
-  sapRecordText: '{"po_number": "CC-PO-2025-001234"}',
 }
 
 describe('validate', () => {
@@ -35,7 +34,7 @@ describe('validate', () => {
     const body = options.body as FormData
     expect(body.get('po_pdf')).toBeInstanceOf(File)
     expect(body.get('contract_pdf')).toBeInstanceOf(File)
-    expect(body.get('sap_record')).toBe(files.sapRecordText)
+    expect(body.has('sap_record')).toBe(false)
   })
 
   it('returns the parsed response on success', async () => {
@@ -58,17 +57,20 @@ describe('validate', () => {
     } satisfies ApiError)
   })
 
-  it('maps a 400 response to the API detail message', async () => {
+  it.each([
+    [400, 'SAP is not configured yet — set up the SAP connection in Settings'],
+    [404, 'PO 4599999999 was not found in SAP (PO number read from the PO document: 4599999999)'],
+    [422, 'Could not read a PO number from the PO document'],
+    [502, 'Could not reach SAP: timed out'],
+  ])('maps a %i response to the API detail message', async (status, detail) => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ detail: 'sap_record must be valid JSON' }), { status: 400 }),
-      ),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })),
     )
 
     await expect(validate('http://localhost:8000', 'my-key', files)).rejects.toMatchObject({
-      status: 400,
-      message: 'sap_record must be valid JSON',
+      status,
+      message: detail,
     } satisfies ApiError)
   })
 
@@ -226,5 +228,52 @@ describe('fetchFromOutlook', () => {
       status: 0,
       message: 'Could not reach the API — check the URL in Settings and that the server is running',
     } satisfies ApiError)
+  })
+})
+
+describe('responses that are not JSON', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const htmlPage = () => new Response('<!doctype html><html></html>', { status: 200 })
+
+  it('explains an HTML response to validate as a wrong API URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlPage()))
+
+    await expect(validate('', 'my-key', files)).rejects.toMatchObject({
+      status: 200,
+      message: expect.stringContaining("doesn't point to the backend"),
+    })
+  })
+
+  it('explains an empty 404 (the frontend server answering) as a wrong API URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })))
+
+    await expect(validate('', 'my-key', files)).rejects.toMatchObject({
+      status: 404,
+      message: expect.stringContaining("doesn't point to the backend"),
+    })
+  })
+
+  it('keeps the server-error message for a plain-text 500 from the backend', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('Internal Server Error', { status: 500 })),
+    )
+
+    await expect(validate('http://127.0.0.1:8000', 'my-key', files)).rejects.toMatchObject({
+      status: 500,
+      message: 'Validation failed on the server. Check the backend logs.',
+    })
+  })
+
+  it('explains an HTML response when loading a saved connection in Settings', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlPage()))
+
+    await expect(getOutlookConfig('', 'my-key')).rejects.toMatchObject({
+      status: 200,
+      message: expect.stringContaining("doesn't point to the backend"),
+    })
   })
 })

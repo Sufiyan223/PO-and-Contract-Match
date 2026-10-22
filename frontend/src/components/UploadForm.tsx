@@ -1,10 +1,5 @@
 import { useState } from 'react'
-import { Mail } from 'lucide-react'
-import { fetchFromOutlook } from '../api'
 import type { ValidateFiles } from '../api'
-import { base64ToFile } from '../download'
-import { getApiKey, getApiUrl } from '../storage'
-import type { ApiError } from '../types'
 import { Alert } from './ui/Alert'
 import { Button } from './ui/Button'
 import { Card } from './ui/Card'
@@ -21,74 +16,23 @@ interface UploadFormProps {
 export function UploadForm({ isLoading, errorMessage, onSubmit, onCancel }: UploadFormProps) {
   const [poPdfFile, setPoPdfFile] = useState<File | null>(null)
   const [contractPdfFile, setContractPdfFile] = useState<File | null>(null)
-  const [sapJsonFile, setSapJsonFile] = useState<File | null>(null)
-  const [sapJsonError, setSapJsonError] = useState<string | null>(null)
-  const [sapRecordText, setSapRecordText] = useState<string | null>(null)
-  const [isFetchingOutlook, setIsFetchingOutlook] = useState(false)
-  const [outlookFetchError, setOutlookFetchError] = useState<string | null>(null)
 
-  async function handleSapFileChange(file: File | null) {
-    setSapJsonFile(file)
-    setSapJsonError(null)
-    setSapRecordText(null)
-    if (!file) return
-
-    const text = await file.text()
-    try {
-      JSON.parse(text)
-      setSapRecordText(text)
-    } catch {
-      setSapJsonError('This file is not valid JSON.')
-    }
-  }
-
-  async function handleFetchFromOutlook() {
-    setOutlookFetchError(null)
-    setIsFetchingOutlook(true)
-    try {
-      const result = await fetchFromOutlook(getApiUrl(), getApiKey())
-      setPoPdfFile(base64ToFile(result.po_pdf_base64, 'po.pdf', 'application/pdf'))
-      setContractPdfFile(base64ToFile(result.contract_pdf_base64, 'contract.pdf', 'application/pdf'))
-    } catch (error) {
-      setOutlookFetchError((error as ApiError).message)
-    } finally {
-      setIsFetchingOutlook(false)
-    }
-  }
-
-  const canSubmit = Boolean(poPdfFile && contractPdfFile && sapRecordText) && !isLoading
+  const canSubmit = Boolean(poPdfFile && contractPdfFile) && !isLoading
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!poPdfFile || !contractPdfFile || !sapRecordText) return
-    onSubmit({ poPdfFile, contractPdfFile, sapRecordText })
+    if (!poPdfFile || !contractPdfFile) return
+    onSubmit({ poPdfFile, contractPdfFile })
   }
 
   return (
     <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
       <Card title="Upload documents">
-        <div className="mb-4 flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 dark:bg-slate-700/40">
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            Provide the PO and Contract manually, or fetch both from Outlook.
-          </p>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            icon={isFetchingOutlook ? <Spinner className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
-            onClick={() => void handleFetchFromOutlook()}
-            disabled={isFetchingOutlook}
-          >
-            {isFetchingOutlook ? 'Fetching from Outlook…' : 'Fetch from Outlook'}
-          </Button>
-        </div>
-        {outlookFetchError && (
-          <div className="mb-4">
-            <Alert>{outlookFetchError}</Alert>
-          </div>
-        )}
+        <p className="mb-4 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-slate-700/40 dark:text-slate-300">
+          Provide the PO and Contract documents manually.
+        </p>
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           <FileDropzone
             id="po-pdf"
             label="Purchase Order (PDF)"
@@ -103,21 +47,11 @@ export function UploadForm({ isLoading, errorMessage, onSubmit, onCancel }: Uplo
             value={contractPdfFile}
             onChange={setContractPdfFile}
           />
-          <div>
-            <FileDropzone
-              id="sap-json"
-              label="SAP Record (JSON)"
-              accept="application/json"
-              value={sapJsonFile}
-              onChange={(file) => void handleSapFileChange(file)}
-            />
-            {sapJsonError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{sapJsonError}</p>}
-          </div>
         </div>
 
         {!canSubmit && !isLoading && (
           <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            Select all three files (SAP record must be valid JSON) to continue.
+            Add both PDFs to continue.
           </p>
         )}
       </Card>
@@ -128,7 +62,8 @@ export function UploadForm({ isLoading, errorMessage, onSubmit, onCancel }: Uplo
         <div className="flex items-center gap-3">
           <Spinner className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
           <p className="text-sm text-slate-600 dark:text-slate-300">
-            Validating — this can take a minute or two…
+            Reading the documents, fetching the PO from SAP and validating — this can take a
+            minute or two…
           </p>
           <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
             Cancel
